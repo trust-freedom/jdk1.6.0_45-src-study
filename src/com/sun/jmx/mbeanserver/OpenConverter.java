@@ -1165,8 +1165,8 @@ public abstract class OpenConverter {
             // so we can test unambiguity.
             Set<BitSet> getterIndexSets = newSet();
             for (Constructor constr : annotatedConstrList) {
-                String[] propertyNames =
-                    constr.getAnnotation(propertyNamesClass).value();
+                String[] propertyNames = null;
+//                    constr.getAnnotation(propertyNamesClass).value();
 
                 Type[] paramTypes = constr.getGenericParameterTypes();
                 if (paramTypes.length != propertyNames.length) {
