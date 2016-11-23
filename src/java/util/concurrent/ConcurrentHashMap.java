@@ -239,6 +239,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
          * created to replace them. This works well for hash tables
          * since the bin lists tend to be short. (The average length
          * is less than two for the default load factor threshold.)
+         * Segment内部的链表数组一直保持一致性状态，所以读时可以不加锁
+         * node节点的下一个元素是不可变的(final)，所以都在链表的最前面添加，这样可以更简单的发现链表改变，因为只需要看链表头即可
          *
          * Read operations can thus proceed without locking, but rely
          * on selected uses of volatiles to ensure that completed
@@ -247,6 +249,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
          * number of elements, serves as that volatile variable
          * ensuring visibility.  This is convenient because this field
          * needs to be read in many read operations anyway:
+         * 读操作可以无锁，但仍需要依赖于volatile关键字保证写操作的结果能被别的线程看到
+         * 比如，count属性
          *
          *   - All (unsynchronized) read operations must first read the
          *     "count" field, and should not look at table entries if
@@ -346,6 +350,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
          * compiler happens to reorder a HashEntry initialization with
          * its table assignment, which is legal under memory model
          * but is not known to ever occur.
+         * value为null的时候调用
+         * 只有在一个编译器在遵守内存模型的前提下，将HashEntry初始化的过程重新排序，但不知道会发生什么
          */
         V readValueUnderLock(HashEntry<K,V> e) {
             lock();
@@ -373,6 +379,10 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                         
                         //如果value为空（本身是不允许的），说明可能这个HashEntry正在创建过程中，get()本身为了并发，没有上锁
                         //此处为了获取value主动获取锁，当写线程完成后，就会获取到，读到value
+                        //个人认为（也根据readValueUnderLock方法注释），
+                        //while已经判断e!=null，即e的引用已经存在，但e没有初始化完成，即构造方法未完成
+                        //按道理来说应该是创建对象过程应该是先加载类信息，堆中分配地址空间，成员变量默认初始化，构造代码块初始化，构造方法初始化，最后将引用赋值给栈中变量
+                        //可能有些编译器会对HashEntry初始化的过程进行重排序，导致没有构造完成前，引用就能够被别的线程得到了
                         return readValueUnderLock(e); // recheck
                     }
                     e = e.next;
@@ -460,7 +470,8 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
             try {
                 int c = count;//Segment中的当前元素个数
                 
-                //如果容量+1后大于阀值，rehash()
+                //如果容量已经大于阀值，rehash()，之后c+1
+                //第一次HashEntry数组长度是1，threshold = (int)(newTable.length * loadFactor)为0，所以第一次put()当前Segment就会rehash()
                 if (c++ > threshold) // ensure capacity
                     rehash();
                 
@@ -582,6 +593,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                     }
                 }
             }
+            
             table = newTable;
         }
 
@@ -614,6 +626,9 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
                         //删除节点之前的节点，需要克隆
                         //如果此时另一个线程正在get()，遍历这个链表，由于原始链表并没有置空，next是final的，也没有改变，所以原链表还可以继续使用，直到没有线程读了，就可以垃圾回收了
                         //如原链表是 1->2->3->4->5，删除3之后是2->1->4->5
+                        //删除前，tab[index] -> 1->2->3->4->5
+                        //删除后， 1->2->3->4->5，还存在
+                        //      tab[index] -> 2->1->4->5，其中2和1是新创建的
                         ++modCount;
                         HashEntry<K,V> newFirst = e.next;
                         for (HashEntry<K,V> p = first; p != e; p = p.next)
@@ -631,7 +646,10 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
             }
         }
 
-        
+        /**
+         * 因为没有全局的锁，在清除完一个segments之后，正在清理下一个segments的时候，已经清理segments可能又被加入了数据，
+         * 因此clear返回的时候，ConcurrentHashMap中是可能存在数据的。因此，clear方法是弱一致的。
+         */
         void clear() {
             if (count != 0) {
                 lock();//上锁
@@ -1007,6 +1025,7 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
      * @throws NullPointerException if the specified key or value is null
      */
     public V put(K key, V value) {
+    	//value不允许为空，其实key也不允许，因为要计算hash值
         if (value == null)
             throw new NullPointerException();
         
@@ -1204,6 +1223,10 @@ public class ConcurrentHashMap<K, V> extends AbstractMap<K, V>
 
         public boolean hasMoreElements() { return hasNext(); }
 
+        /**
+         * 在遍历过程中，如果已经遍历的数组上的内容变化了，迭代器不会抛出ConcurrentModificationException异常。
+         * 如果未遍历的数组上的内容发生了变化，则有可能反映到迭代过程中。这就是ConcurrentHashMap迭代器弱一致的表现。
+         */
         final void advance() {
             if (nextEntry != null && (nextEntry = nextEntry.next) != null)
                 return;
